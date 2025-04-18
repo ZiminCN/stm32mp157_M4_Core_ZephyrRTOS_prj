@@ -1,5 +1,5 @@
 board:
-  name: stm32mp157c_dk2
+  name: fork_stm32mp157c_dk2
   vendor: st
   socs:
     - name: stm32mp157cxx

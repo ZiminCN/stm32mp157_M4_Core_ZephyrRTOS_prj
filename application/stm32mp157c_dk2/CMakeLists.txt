@@ -21,21 +21,21 @@ include_directories(${CMAKE_CURRENT_SOURCE_DIR}/Core/inc)
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/User/inc)
 
 find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
-project(Vulcan)
+project(openAMP_project)
 
-include(${CMAKE_CURRENT_LIST_DIR}/version/version.cmake)
+include(${CMAKE_CURRENT_LIST_DIR}/software_version/version.cmake)
 
 file(GLOB USER_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/User/src/*.c ${CMAKE_CURRENT_SOURCE_DIR}/User/src/*.cpp)
 file(GLOB CORE_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/Core/src/*.c ${CMAKE_CURRENT_SOURCE_DIR}/Core/src/*.cpp)
 
 set(AHRS_SOURCES
-    lib/madgwick/ahrs_madgwick.c
-    lib/madgwick/FusionAhrs.c
-    lib/madgwick/FusionCompass.c
-    lib/madgwick/ahrs_madgwick.c
-    lib/madgwick/FusionOffset.c
+#     lib/madgwick/ahrs_madgwick.c
+#     lib/madgwick/FusionAhrs.c
+#     lib/madgwick/FusionCompass.c
+#     lib/madgwick/ahrs_madgwick.c
+#     lib/madgwick/FusionOffset.c
 )
-include_directories(lib/madgwick)
+# include_directories(lib/madgwick)
 
 target_compile_definitions(app PRIVATE _GNU_SOURCE=1 DIABLO_ZEPHYR=1)
 target_sources(app PRIVATE ${USER_SOURCES} ${CORE_SOURCES} ${AHRS_SOURCES})
