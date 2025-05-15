@@ -13,26 +13,21 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <zephyr/device.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/settings/settings.h>
-// #include <zephyr/smf.h>
-
-// #include "fsm.hpp"
 
 LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
 
-int main(void)
-{
-	LOG_INF("STM32MP157 Cotex M4 Start!");
+int main(void) {
+  LOG_INF("STM32MP157 Start! Board Name: %s", CONFIG_BOARD);
 
-	// std::shared_ptr<FSM> fsm_driver_api = FSM::getInstance();
-
-	// fsm_driver_api->vulcan_fsm_init(VULCAN_INIT_STATE);
-
-	while (true) {
-		// LOG_INF("IDLE...");
-		k_sleep(K_SECONDS(1));
-	}
-	return 0;
+  while (true) {
+    k_sleep(K_MSEC(1000));
+    LOG_INF("STM32MP157 Running...");
+  }
 }

@@ -23,7 +23,7 @@ include_directories(${CMAKE_CURRENT_SOURCE_DIR}/User/inc)
 find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
 project(openAMP_project)
 
-include(${CMAKE_CURRENT_LIST_DIR}/software_version/version.cmake)
+include(${CMAKE_CURRENT_LIST_DIR}/SoftwareVersion/version.cmake)
 
 file(GLOB USER_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/User/src/*.c ${CMAKE_CURRENT_SOURCE_DIR}/User/src/*.cpp)
 file(GLOB CORE_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/Core/src/*.c ${CMAKE_CURRENT_SOURCE_DIR}/Core/src/*.cpp)
@@ -38,6 +38,8 @@ set(AHRS_SOURCES
 # include_directories(lib/madgwick)
 
 target_compile_definitions(app PRIVATE _GNU_SOURCE=1 DIABLO_ZEPHYR=1)
-target_sources(app PRIVATE ${USER_SOURCES} ${CORE_SOURCES} ${AHRS_SOURCES})
+target_sources(app PRIVATE ${USER_SOURCES} ${CORE_SOURCES} ${AHRS_SOURCES} ${LIBMETAL_INCLUDE_DIR} ${OPENAMP_INCLUDE_DIR} ${PLATFORM_DIR})
+
+# zephyr_code_relocate(FILES User/src/main.cpp LOCATION MCUSRAM1 NOCOPY NOKEEP)
 
 zephyr_compile_options(-Werror -Wno-unused-function)
