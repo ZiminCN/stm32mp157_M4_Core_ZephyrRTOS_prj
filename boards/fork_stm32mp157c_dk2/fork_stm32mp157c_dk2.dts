@@ -23,6 +23,8 @@
 		 * zephyr,console = &usart3;
 		 * zephyr,shell-uart = &usart3;
 		 */
+		zephyr,console = &usart3;
+		zephyr,shell-uart = &usart3;
 		zephyr,flash = &retram;
 		zephyr,sram = &mcusram;
 	};
