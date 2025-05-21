@@ -40,6 +40,8 @@ set(AHRS_SOURCES
 target_compile_definitions(app PRIVATE _GNU_SOURCE=1 DIABLO_ZEPHYR=1)
 target_sources(app PRIVATE ${USER_SOURCES} ${CORE_SOURCES} ${AHRS_SOURCES} ${LIBMETAL_INCLUDE_DIR} ${OPENAMP_INCLUDE_DIR} ${PLATFORM_DIR})
 
+zephyr_compile_definitions(METAL_MAX_DEVICE_REGIONS=2)
+
 # zephyr_code_relocate(FILES User/src/main.cpp LOCATION MCUSRAM1 NOCOPY NOKEEP)
 
 zephyr_compile_options(-Werror -Wno-unused-function)
