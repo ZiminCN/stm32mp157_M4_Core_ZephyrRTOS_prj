@@ -1,17 +1,8 @@
-// Copyright (c) Direct Drive Technology Co., Ltd. All rights reserved.
-// Author: Zi Min <jianming.zeng@directdrivetech.com>
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+/*
+ * Copyright (c) 2022, STMICROELECTRONICS
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -25,8 +16,7 @@
 #include <metal/device.h>
 #include <openamp/open_amp.h>
 #include <resource_table.h>
-
-LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
+LOG_MODULE_REGISTER(openamp_rsc_table, LOG_LEVEL_DBG);
 
 #define SHM_DEVICE_NAME "shm"
 
@@ -42,15 +32,20 @@ LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
 #define APP_TASK_STACK_SIZE (1024)
 
 #define MAX_TTY_EPT 2
+#define MAX_RAW_EPT 2
 
-/* Add 1024 extra bytes for the TTY task stack for the "tx_buff" buffer. */
 #define APP_TTY_TASK_STACK_SIZE (2048)
+#define APP_RAW_TASK_STACK_SIZE (2048)
 
 K_THREAD_STACK_DEFINE(thread_mng_stack, APP_TASK_STACK_SIZE);
+K_THREAD_STACK_DEFINE(thread_rp__client_stack, APP_TASK_STACK_SIZE);
 K_THREAD_STACK_DEFINE(thread_tty_stack, APP_TTY_TASK_STACK_SIZE);
+// K_THREAD_STACK_DEFINE(thread_raw_stack, APP_RAW_TASK_STACK_SIZE);
 
 static struct k_thread thread_mng_data;
+// static struct k_thread thread_rp__client_data;
 static struct k_thread thread_tty_data;
+// static struct k_thread thread_raw_data;
 
 static const struct device *const ipm_handle = DEVICE_DT_GET(DT_CHOSEN(zephyr_ipc));
 
@@ -83,31 +78,66 @@ static struct rpmsg_virtio_device rvdev;
 static struct fw_resource_table *rsc_table;
 static struct rpmsg_device *rpdev;
 
+static char rx_cs_msg[20]; /* should receive "Hello world!" */
+static struct rpmsg_endpoint cs_ept;
+static struct rpmsg_rcv_msg cs_msg = {.data = rx_cs_msg};
+
 static struct rpmsg_endpoint tty_ept[MAX_TTY_EPT];
 static struct rpmsg_rcv_msg tty_msg[MAX_TTY_EPT];
 
+// static struct rpmsg_endpoint raw_ept[MAX_RAW_EPT];
+// static struct rpmsg_rcv_msg raw_msg[MAX_RAW_EPT];
+
 static K_SEM_DEFINE(data_sem, 0, 1);
+static K_SEM_DEFINE(data_cs_sem, 0, 1);
 static K_SEM_DEFINE(data_tty_sem, 0, 1);
+// static K_SEM_DEFINE(data_raw_sem, 0, 1);
 
 static void platform_ipm_callback(const struct device *dev, void *context, uint32_t id,
 				  volatile void *data)
 {
-	LOG_DBG("%s: msg received from mb %d", __func__, id);
+	LOG_DBG("%s: msg received from mb %d\n", __func__, id);
 	k_sem_give(&data_sem);
+}
+
+static int rpmsg_recv_cs_callback(struct rpmsg_endpoint *ept, void *data, size_t len, uint32_t src,
+				  void *priv)
+{
+	memcpy(cs_msg.data, data, len);
+	cs_msg.len = len;
+	k_sem_give(&data_cs_sem);
+
+	return RPMSG_SUCCESS;
 }
 
 static int rpmsg_recv_tty_callback(struct rpmsg_endpoint *ept, void *data, size_t len, uint32_t src,
 				   void *priv)
 {
-	struct rpmsg_rcv_msg *msg = priv;
+	struct rpmsg_rcv_msg *tty_msg = priv;
 
 	rpmsg_hold_rx_buffer(ept, data);
-	msg->data = data;
-	msg->len = len;
+	tty_msg->data = data;
+	tty_msg->len = len;
 	k_sem_give(&data_tty_sem);
 
 	return RPMSG_SUCCESS;
 }
+
+// static int rpmsg_recv_raw_callback(struct rpmsg_endpoint *ept, void *data, size_t len,
+// uint32_t
+// src, 				   void *priv)
+// {
+// 	struct rpmsg_rcv_msg *raw_msg = priv;
+
+// 	rpmsg_hold_rx_buffer(ept, data);
+// 	raw_msg->data = data;
+// 	raw_msg->len = len;
+// 	raw_msg->src = src;
+
+// 	k_sem_give(&data_raw_sem);
+
+// 	return RPMSG_SUCCESS;
+// }
 
 static void receive_message(unsigned char **msg, unsigned int *len)
 {
@@ -147,16 +177,15 @@ static void new_service_cb(struct rpmsg_device *rdev, const char *name, uint32_t
 
 		return;
 	}
-	LOG_ERR("%s: unexpected ns service receive for name %s", __func__, name);
+	LOG_ERR("%s: unexpected ns service receive for name %s\n", __func__, name);
 }
 
 int mailbox_notify(void *priv, uint32_t id)
 {
 	ARG_UNUSED(priv);
 
-	LOG_DBG("%s: msg received", __func__);
-	ipm_send(ipm_handle, 0, id, &id, 4);
-	// ipm_send(ipm_handle, 0, id, NULL, 0);
+	LOG_DBG("%s: msg received\n", __func__);
+	ipm_send(ipm_handle, 0, id, NULL, 0);
 
 	return 0;
 }
@@ -225,6 +254,13 @@ int platform_init(void)
 	return 0;
 }
 
+static void cleanup_system(void)
+{
+	ipm_set_enabled(ipm_handle, 0);
+	rpmsg_deinit_vdev(&rvdev);
+	metal_finish();
+}
+
 struct rpmsg_device *platform_create_rpmsg_vdev(unsigned int vdev_index, unsigned int role,
 						void (*rst_cb)(struct virtio_device *vdev),
 						rpmsg_ns_bind_cb ns_cb)
@@ -237,7 +273,7 @@ struct rpmsg_device *platform_create_rpmsg_vdev(unsigned int vdev_index, unsigne
 					rsc_io, NULL, mailbox_notify, NULL);
 
 	if (!vdev) {
-		LOG_ERR("failed to create vdev");
+		LOG_DBG("failed to create vdev\r\n");
 		return NULL;
 	}
 
@@ -248,7 +284,7 @@ struct rpmsg_device *platform_create_rpmsg_vdev(unsigned int vdev_index, unsigne
 	ret = rproc_virtio_init_vring(vdev, 0, vring_rsc->notifyid, (void *)vring_rsc->da, rsc_io,
 				      vring_rsc->num, vring_rsc->align);
 	if (ret) {
-		LOG_ERR("failed to init vring 0");
+		LOG_DBG("failed to init vring 0\r\n");
 		goto failed;
 	}
 
@@ -256,7 +292,7 @@ struct rpmsg_device *platform_create_rpmsg_vdev(unsigned int vdev_index, unsigne
 	ret = rproc_virtio_init_vring(vdev, 1, vring_rsc->notifyid, (void *)vring_rsc->da, rsc_io,
 				      vring_rsc->num, vring_rsc->align);
 	if (ret) {
-		LOG_ERR("failed to init vring 1");
+		LOG_DBG("failed to init vring 1\r\n");
 		goto failed;
 	}
 
@@ -264,7 +300,7 @@ struct rpmsg_device *platform_create_rpmsg_vdev(unsigned int vdev_index, unsigne
 	ret = rpmsg_init_vdev(&rvdev, vdev, ns_cb, shm_io, &shpool);
 
 	if (ret) {
-		LOG_ERR("failed rpmsg_init_vdev");
+		LOG_DBG("failed rpmsg_init_vdev\r\n");
 		goto failed;
 	}
 
@@ -272,17 +308,115 @@ struct rpmsg_device *platform_create_rpmsg_vdev(unsigned int vdev_index, unsigne
 
 failed:
 	rproc_virtio_remove_vdev(vdev);
-	LOG_ERR("failed platform_create_rpmsg_vdev");
 
 	return NULL;
 }
 
-static void cleanup_system(void)
+void app_rpmsg_client_sample(void *arg1, void *arg2, void *arg3)
 {
-	ipm_set_enabled(ipm_handle, 0);
-	rpmsg_deinit_vdev(&rvdev);
-	metal_finish();
+	ARG_UNUSED(arg1);
+	ARG_UNUSED(arg2);
+	ARG_UNUSED(arg3);
+	unsigned int msg_cnt = 0;
+	int ret = 0;
+
+	k_sem_take(&data_cs_sem, K_FOREVER);
+
+	printk("\r\nOpenAMP[remote] Linux sample client responder started\r\n");
+
+	ret = rpmsg_create_ept(&cs_ept, rpdev, "rpmsg-client-sample", RPMSG_ADDR_ANY,
+			       RPMSG_ADDR_ANY, rpmsg_recv_cs_callback, NULL);
+
+	while (msg_cnt < 100) {
+		k_sem_take(&data_cs_sem, K_FOREVER);
+		msg_cnt++;
+		rpmsg_send(&cs_ept, cs_msg.data, cs_msg.len);
+	}
+	rpmsg_destroy_ept(&cs_ept);
+
+	printk("OpenAMP Linux sample client responder ended\n");
 }
+
+void app_rpmsg_tty(void *arg1, void *arg2, void *arg3)
+{
+	ARG_UNUSED(arg1);
+	ARG_UNUSED(arg2);
+	ARG_UNUSED(arg3);
+	unsigned char tx_buff[512];
+	int i, ret = 0;
+
+	k_sem_take(&data_tty_sem, K_FOREVER);
+
+	printk("\r\nOpenAMP[remote] Linux tty responder started\r\n");
+
+	/*
+	 * The first TTY channel instance is created locally
+	 * The second one will be instantiate on a name service announcement
+	 */
+	tty_ept[0].priv = &tty_msg[0];
+	ret = rpmsg_create_ept(&tty_ept[0], rpdev, "rpmsg-tty", RPMSG_ADDR_ANY, RPMSG_ADDR_ANY,
+			       rpmsg_recv_tty_callback, NULL);
+
+	while (tty_ept[0].addr != RPMSG_ADDR_ANY) {
+		k_sem_take(&data_tty_sem, K_FOREVER);
+		for (i = 0; i < MAX_TTY_EPT; i++) {
+			if (tty_msg[i].len) {
+				snprintf(tx_buff, 8, "TTY %d: ", i);
+				memcpy(&tx_buff[7], tty_msg[i].data, tty_msg[i].len);
+				rpmsg_send(&tty_ept[i], tx_buff, tty_msg[i].len + 8);
+				rpmsg_release_rx_buffer(&tty_ept[i], tty_msg[i].data);
+			}
+			tty_msg[i].len = 0;
+			tty_msg[i].data = NULL;
+		}
+	}
+	rpmsg_destroy_ept(&tty_ept[0]);
+
+	printk("OpenAMP Linux TTY responder ended\n");
+}
+
+// void app_rpmsg_raw(void *arg1, void *arg2, void *arg3)
+// {
+// 	ARG_UNUSED(arg1);
+// 	ARG_UNUSED(arg2);
+// 	ARG_UNUSED(arg3);
+// 	unsigned char buff[512];
+// 	int i, ret = 0;
+
+// 	k_sem_take(&data_raw_sem, K_FOREVER);
+
+// 	printk("\r\nOpenAMP[remote] Linux raw data responder started\r\n");
+
+// 	raw_ept[0].priv = &raw_msg[0];
+// 	ret = rpmsg_create_ept(&raw_ept[0], rpdev, "rpmsg-raw", RPMSG_ADDR_ANY, RPMSG_ADDR_ANY,
+// 			       rpmsg_recv_raw_callback, NULL);
+
+// 	printk("\r\nOpenAMP[remote] create a endpoint with address and dest_address set to "
+// 	       "0x1\r\n");
+
+// 	ret = rpmsg_create_ept(&raw_ept[1], rpdev, "rpmsg-raw", 0x1, 0x1, rpmsg_recv_raw_callback,
+// 			       NULL);
+
+// 	raw_ept[1].priv = &raw_msg[1];
+// 	while (raw_ept[0].addr != RPMSG_ADDR_ANY) {
+// 		k_sem_take(&data_raw_sem, K_FOREVER);
+// 		for (i = 0; i < MAX_RAW_EPT; i++) {
+// 			if (raw_msg[i].len) {
+// 				snprintf(buff, 18, "from ept 0x%04x: ", raw_ept[i].addr);
+// 				memcpy(&buff[17], raw_msg[i].data, raw_msg[i].len);
+// 				rpmsg_sendto(&raw_ept[i], buff, raw_msg[i].len + 18,
+// 					     raw_msg[i].src);
+// 				rpmsg_release_rx_buffer(&raw_ept[i], raw_msg[i].data);
+// 			}
+// 			raw_msg[i].len = 0;
+// 			raw_msg[i].data = NULL;
+// 		}
+// 	}
+// 	rpmsg_destroy_ept(&raw_ept[0]);
+// 	rpmsg_destroy_ept(&raw_ept[1]);
+
+// 	printk("OpenAMP Linux raw data responder ended\n");
+// }
 
 void rpmsg_mng_task(void *arg1, void *arg2, void *arg3)
 {
@@ -325,57 +459,21 @@ task_end:
 	printk("OpenAMP demo ended\n");
 }
 
-void app_rpmsg_tty_task(void *arg1, void *arg2, void *arg3)
-{
-	ARG_UNUSED(arg1);
-	ARG_UNUSED(arg2);
-	ARG_UNUSED(arg3);
-	unsigned char tx_buff[512];
-	int i, ret = 0;
-
-	k_sem_take(&data_tty_sem, K_FOREVER);
-
-	printk("\r\nOpenAMP[remote] Linux tty responder started\r\n");
-
-	/*
-	 * The first TTY channel instance is created locally
-	 * The second one will be instantiate on a name service announcement
-	 */
-	tty_ept[0].priv = &tty_msg[0];
-	ret = rpmsg_create_ept(&tty_ept[0], rpdev, "rpmsg-tty", RPMSG_ADDR_ANY, RPMSG_ADDR_ANY,
-			       rpmsg_recv_tty_callback, NULL);
-
-	while (tty_ept[0].addr != RPMSG_ADDR_ANY) {
-		k_sem_take(&data_tty_sem, K_FOREVER);
-		for (i = 0; i < MAX_TTY_EPT; i++) {
-			if (tty_msg[i].len) {
-				snprintf(tx_buff, 8, "TTY %d: ", i);
-				memcpy(&tx_buff[7], tty_msg[i].data, tty_msg[i].len);
-				rpmsg_send(&tty_ept[i], tx_buff, tty_msg[i].len + 8);
-				rpmsg_release_rx_buffer(&tty_ept[i], tty_msg[i].data);
-			}
-			tty_msg[i].len = 0;
-			tty_msg[i].data = NULL;
-		}
-	}
-	rpmsg_destroy_ept(&tty_ept[0]);
-
-	printk("OpenAMP Linux TTY responder ended\n");
-}
-
 int main(void)
 {
-	LOG_INF("STM32MP157 Start! Board Name: %s", CONFIG_BOARD);
-
-	//! init rpmsg playform
+	printk("Starting application threads!\n");
 	k_thread_create(&thread_mng_data, thread_mng_stack, APP_TASK_STACK_SIZE,
 			(k_thread_entry_t)rpmsg_mng_task, NULL, NULL, NULL, K_PRIO_COOP(8), 0,
 			K_NO_WAIT);
-
-	//! init tty endpoint and listen for bus rpmsg data
+	// k_thread_create(&thread_rp__client_data, thread_rp__client_stack, APP_TASK_STACK_SIZE,
+	// 		(k_thread_entry_t)app_rpmsg_client_sample,
+	// 		NULL, NULL, NULL, K_PRIO_COOP(7), 0, K_NO_WAIT);
 	k_thread_create(&thread_tty_data, thread_tty_stack, APP_TTY_TASK_STACK_SIZE,
-			(k_thread_entry_t)app_rpmsg_tty_task, NULL, NULL, NULL, K_PRIO_COOP(7), 0,
+			(k_thread_entry_t)app_rpmsg_tty, NULL, NULL, NULL, K_PRIO_COOP(7), 0,
 			K_NO_WAIT);
+	// k_thread_create(&thread_raw_data, thread_raw_stack, APP_TASK_STACK_SIZE * 2,
+	// 		(k_thread_entry_t)app_rpmsg_raw,
+	// 		NULL, NULL, NULL, K_PRIO_COOP(7), 0, K_NO_WAIT);
 
 	return 0;
 }
